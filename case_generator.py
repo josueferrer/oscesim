@@ -11,4 +11,5 @@ def generate_station(lang="en"):
         " answer_key {main_diagnosis, differentials(list)}."
        )}
     usr = {"role":"user","content":f"Generate an OSCE station for chief complaint: {chief}"}
-    return json.loads(chat([sys_msg, usr], model="gpt-4o")) 
+    # Using GPT-4.1 for complex medical case generation - higher temperature for creativity
+    return json.loads(chat([sys_msg, usr], model="gpt-4.1", temperature=0.4)) 

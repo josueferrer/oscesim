@@ -53,7 +53,8 @@ elif st.session_state.phase=="exam":
     prompt = st.chat_input("Ask / respond…", disabled=secs==0)
     if prompt:
         st.session_state.msgs.append({"role":"user","content":prompt})
-        reply = chat(st.session_state.msgs, model="gpt-4o-mini", max_tokens=120)
+        # Using GPT-4.1 for patient simulation - lower temperature for consistent patient responses
+        reply = chat(st.session_state.msgs, model="gpt-4.1", temperature=0.3, max_tokens=120)
         st.session_state.msgs.append({"role":"assistant","content":reply})
         st.experimental_rerun()
 

@@ -11,7 +11,7 @@ def checklist_score(lang, transcript):
             "Return JSON list of binary ints."
         )}
     usr = {"role":"user","content":f"Transcript:\n{transcript}\n\nChecklist:\n"+"\n".join(items)}
-    raw = chat([sys, usr], model="gpt-4o")
+    raw = chat([sys, usr], model="gpt-4.1", temperature=0.1)
     try:
         done = json.loads(raw)
     except:
