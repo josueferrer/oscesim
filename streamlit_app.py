@@ -21,7 +21,7 @@ if st.session_state.phase=="setup":
         st.session_state.stations=[generate_station(lang) for _ in range(n_stn)]
         st.session_state.current=0
         st.session_state.phase="exam"
-        st.experimental_rerun()
+        st.rerun()
 
 ### ------------------ 2. EXAM LOOP ------------------ ###
 elif st.session_state.phase=="exam":
@@ -56,7 +56,7 @@ elif st.session_state.phase=="exam":
         # Using GPT-4.1 for patient simulation - lower temperature for consistent patient responses
         reply = chat(st.session_state.msgs, model="gpt-4.1", temperature=0.3, max_tokens=120)
         st.session_state.msgs.append({"role":"assistant","content":reply})
-        st.experimental_rerun()
+        st.rerun()
 
     ### ---- Hint button ----
     with st.sidebar:
@@ -80,7 +80,7 @@ elif st.session_state.phase=="exam":
         st.session_state.msgs, st.session_state.timer, st.session_state.dx = [], None, None
         if st.session_state.current >= len(st.session_state.stations):
             st.session_state.phase="results"
-        st.experimental_rerun()
+        st.rerun()
 
 ### ------------------ 3. RESULTS DASHBOARD ------------------ ###
 else:
