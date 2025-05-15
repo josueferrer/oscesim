@@ -104,14 +104,26 @@ if st.session_state.phase == "setup":
         st.session_state.duration = 60 * t_min  # Store duration in seconds
         
         # Generate stations based on user's choice
-        if exam_mode == "Random Cases":
-            st.session_state.stations = [generate_station(lang) for _ in range(n_stn)]
-        else:
-            if not custom_case_desc.strip():
-                st.error("Please provide a description for your custom case")
-                st.stop()
-            
-            with st.spinner("Generating custom case..."):
+        with st.spinner("Generating exam cases... This may take a moment"):
+            if exam_mode == "Random Cases":
+                # Generate unique cases for each station
+                st.session_state.stations = []
+                for i in range(n_stn):
+                    new_case = generate_station(lang)
+                    # Ensure patient has a realistic name if missing
+                    if "patientInfo" in new_case and ("name" not in new_case["patientInfo"] or new_case["patientInfo"]["name"].startswith("Patient_")):
+                        gender = new_case["patientInfo"].get("gender", "").lower()
+                        if gender == "male":
+                            names = ["James Wilson", "Michael Smith", "Robert Johnson", "Daniel Brown", "David Lee", "John Davis", "Thomas Garcia", "Richard Martinez", "Joseph Robinson", "Charles Wright"]
+                        else:
+                            names = ["Mary Williams", "Patricia Jones", "Jennifer Taylor", "Linda Anderson", "Elizabeth Thomas", "Barbara Jackson", "Susan White", "Jessica Harris", "Sarah Martin", "Karen Thompson"]
+                        new_case["patientInfo"]["name"] = names[i % len(names)]
+                    st.session_state.stations.append(new_case)
+            else:
+                if not custom_case_desc.strip():
+                    st.error("Please provide a description for your custom case")
+                    st.stop()
+                
                 st.session_state.stations = [custom_case_generator(lang, custom_case_desc)]
         
         st.session_state.current = 0
@@ -196,9 +208,11 @@ elif st.session_state.phase == "exam":
         st.session_state.msgs = []
         
         # Add initial patient greeting
+        patient_info = station.get("patientInfo", {})
+        patient_name = patient_info.get("name", "Patient")
         initial_msg = {
             "role": "assistant", 
-            "content": f"Hello doctor. I'm here because of {chief_complaint}."
+            "content": f"Hello doctor. I'm {patient_name}. I'm here because of {chief_complaint}."
         }
         st.session_state.msgs.append(initial_msg)
     
@@ -342,60 +356,69 @@ else:
     # Display individual station results
     st.subheader("Station Details")
     
-    for i, s in enumerate(st.session_state.stations):
-        if "result" not in s:
-            continue
+    # Create two tabs - one for performance summary and one for case details
+    tab1, tab2 = st.tabs(["📊 Performance Summary", "📋 Full Case Details"])
+    
+    with tab1:
+        for i, s in enumerate(st.session_state.stations):
+            if "result" not in s:
+                continue
+                
+            res = s["result"]
+            expected_dx = s["answer_key"]["main_diagnosis"]
+            student_dx = s.get("student_dx", "")
             
-        res = s["result"]
-        expected_dx = s["answer_key"]["main_diagnosis"]
-        student_dx = s.get("student_dx", "")
-        
-        # Create an expandable section for each station
-        with st.expander(f"Station {i+1}: {s['chiefComplaint']} - Score: {res['overall_pct']}%", expanded=i==0):
-            col1, col2 = st.columns([3, 2])
-            
-            with col1:
-                st.markdown("#### Diagnostic Assessment")
-                st.write(f"**Your diagnosis:** {student_dx}")
-                st.write(f"**Correct diagnosis:** {expected_dx}")
+            # Create an expandable section for each station
+            with st.expander(f"Station {i+1}: {s['chiefComplaint']} - Score: {res['overall_pct']}%", expanded=i==0):
+                col1, col2 = st.columns([3, 2])
                 
-                # Score breakdown
-                st.markdown("#### Score Breakdown")
-                st.write(f"**History taking:** {res.get('history_pct', res.get('checklist_pct', 0))}%")
-                st.write(f"**Examination:** {res.get('exam_pct', 'N/A')}%")
-                st.write(f"**Management:** {res.get('management_pct', 'N/A')}%")
-                st.write(f"**Diagnosis accuracy:** {res['diagnosis_pct']}%")
-                
-                # Key missed items
-                st.markdown("#### Areas for Improvement")
-                missed = res["missed_items"]
-                if missed:
-                    for item in missed:
-                        st.write(f"- {item}")
-                else:
-                    st.write("Great job! No major items missed.")
-            
-            with col2:
-                # Patient details
-                st.markdown("#### Patient Information")
-                
-                patient_info = s.get("patientInfo", {})
-                if patient_info:
-                    st.write(f"**Name:** {patient_info.get('name', 'Unknown')}")
-                    st.write(f"**Age:** {patient_info.get('age', 'Unknown')}")
-                    st.write(f"**Gender:** {patient_info.get('gender', 'Unknown')}")
-                
-                # Management recommendations
-                st.markdown("#### Recommended Management")
-                management_steps = s["answer_key"].get("management", [])
-                if management_steps:
-                    for step in management_steps:
-                        st.write(f"- {step}")
-                else:
-                    st.write("No specific management provided for this case.")
+                with col1:
+                    st.markdown("#### Diagnostic Assessment")
+                    st.write(f"**Your diagnosis:** {student_dx}")
+                    st.write(f"**Correct diagnosis:** {expected_dx}")
                     
-            # Full case details at the bottom of each expander
-            with st.expander("Full Case Details", expanded=False):
+                    # Score breakdown
+                    st.markdown("#### Score Breakdown")
+                    st.write(f"**History taking:** {res.get('history_pct', res.get('checklist_pct', 0))}%")
+                    st.write(f"**Examination:** {res.get('exam_pct', 'N/A')}%")
+                    st.write(f"**Management:** {res.get('management_pct', 'N/A')}%")
+                    st.write(f"**Diagnosis accuracy:** {res['diagnosis_pct']}%")
+                    
+                    # Key missed items
+                    st.markdown("#### Areas for Improvement")
+                    missed = res["missed_items"]
+                    if missed:
+                        for item in missed:
+                            st.write(f"- {item}")
+                    else:
+                        st.write("Great job! No major items missed.")
+                
+                with col2:
+                    # Patient details
+                    st.markdown("#### Patient Information")
+                    
+                    patient_info = s.get("patientInfo", {})
+                    if patient_info:
+                        st.write(f"**Name:** {patient_info.get('name', 'Unknown')}")
+                        st.write(f"**Age:** {patient_info.get('age', 'Unknown')}")
+                        st.write(f"**Gender:** {patient_info.get('gender', 'Unknown')}")
+                    
+                    # Management recommendations
+                    st.markdown("#### Recommended Management")
+                    management_steps = s["answer_key"].get("management", [])
+                    if management_steps:
+                        for step in management_steps:
+                            st.write(f"- {step}")
+                    else:
+                        st.write("No specific management provided for this case.")
+    
+    with tab2:
+        for i, s in enumerate(st.session_state.stations):
+            if "result" not in s:
+                continue
+            
+            # Create an expandable section for each station
+            with st.expander(f"Station {i+1}: {s['chiefComplaint']}", expanded=i==0):
                 # Remove system/internal data for cleaner display
                 display_data = {k: v for k, v in s.items() if k not in ['result', 'transcript', 'student_dx', 'generated_timestamp']}
                 st.json(display_data)

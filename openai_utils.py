@@ -46,7 +46,7 @@ def chat(messages, model="gpt-4o", temperature=0.2, max_tokens=600, retry_count=
         time.sleep(2 * (retry_count + 1))  # Exponential backoff
         return chat(messages, model=model, temperature=temperature, max_tokens=max_tokens, retry_count=retry_count+1)
 
-def patient_simulation(patient_case, user_message, chat_history=None, model="gpt-4.1"):
+def patient_simulation(patient_case, user_message, chat_history=None, model="gpt-4o"):
     """
     Specialized function to simulate a patient's responses based on a generated case.
     

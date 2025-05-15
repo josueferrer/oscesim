@@ -125,9 +125,21 @@ def generate_station(lang="en", custom_case=None):
 
 def create_fallback_case(chief, age, gender, lang):
     """Create a simple fallback case when JSON parsing fails"""
+    # Create proper names based on gender
+    if gender.lower() == "male":
+        name = random.choice([
+            "James Wilson", "Michael Smith", "Robert Johnson", 
+            "Daniel Brown", "David Lee", "John Davis"
+        ])
+    else:
+        name = random.choice([
+            "Mary Williams", "Patricia Jones", "Jennifer Taylor", 
+            "Linda Anderson", "Elizabeth Thomas", "Barbara Jackson"
+        ])
+    
     return {
         "patientInfo": {
-            "name": f"Patient_{random.randint(1000, 9999)}",
+            "name": name,
             "age": age,
             "gender": gender,
             "occupation": "Office worker"
