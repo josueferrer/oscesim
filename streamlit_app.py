@@ -1,13 +1,31 @@
-import streamlit as st, time
+import streamlit as st, time, json, os, random
 from case_generator import generate_station, custom_case_generator
-from evaluator import evaluate
+from evaluator import evaluate, render_mark_sheet
 from timer_utils import start_timer, remaining
 from hint_engine import generate_hint
 from openai_utils import chat, patient_simulation
+from categories import CATEGORIES
+from prompt_templates import CANDIDATE_INSTRUCTIONS
+from checklist import CHECKLIST, MAX_SCORE
 
+# Setup page config
 st.set_page_config("OSCE Chat Simulator", layout="wide", page_icon="🩺")
+
+# Initialize session state
 if "phase" not in st.session_state:
     st.session_state.phase = "setup"
+
+# Make sure API key is properly set up
+def get_api_key():
+    """Get API key from environment or secrets"""
+    # First try to get from environment
+    api_key = os.getenv("OPENAI_API_KEY")
+    
+    # If not in environment, try to get from Streamlit secrets
+    if not api_key and hasattr(st, "secrets") and "openai" in st.secrets:
+        api_key = st.secrets["openai"]["api_key"]
+        
+    return api_key
 
 # OSCE marking criteria constants
 HISTORY_CRITERIA = [
@@ -64,18 +82,35 @@ COMMUNICATION_CRITERIA = [
 if st.session_state.phase == "setup":
     st.title("🩺 OSCE Chat Simulator")
     
+    # Show API key warning if missing
+    api_key = get_api_key()
+    if not api_key:
+        st.error("⚠️ No OpenAI API key found. Please set the OPENAI_API_KEY environment variable or in Streamlit secrets.")
+        st.stop()
+    
     # Two-column layout for setup
     col1, col2 = st.columns([3, 2])
     
     with col1:
         st.subheader("Exam Settings")
         lang = st.selectbox("Language", {"en": "English", "ar": "Arabic"})
-        exam_mode = st.radio("Exam Mode", ["Random Cases", "Custom Cases"])
+        exam_mode = st.radio("Exam Mode", ["Random Cases", "Custom Cases", "Upload JSON Case"])
         
         if exam_mode == "Random Cases":
+            # Add specialty selection
+            specialty = st.selectbox("Medical Specialty", list(CATEGORIES.keys()))
+            chief_options = CATEGORIES[specialty]
+            
+            # Allow user to select specific chief complaints or random
+            chief_selection = st.radio("Chief Complaint Selection", ["Random", "Choose Specific"])
+            if chief_selection == "Choose Specific":
+                selected_chief = st.selectbox("Chief Complaint", chief_options)
+            
+            # Number of stations and time settings
             n_stn = st.number_input("Number of stations", 1, 10, 3)
             t_min = st.slider("Minutes per station", 3, 10, 5)
-        else:
+            
+        elif exam_mode == "Custom Cases":
             n_stn = st.number_input("Number of stations", 1, 5, 1)
             t_min = st.slider("Minutes per station", 3, 15, 8)
             
@@ -85,6 +120,16 @@ if st.session_state.phase == "setup":
                 placeholder="E.g., A 65-year-old male with chest pain and history of hypertension...",
                 height=150
             )
+        else:  # Upload JSON Case
+            t_min = st.slider("Minutes per station", 3, 15, 8)
+            
+            st.subheader("Upload Case File")
+            uploaded_file = st.file_uploader("Upload JSON case file", type="json")
+            if uploaded_file:
+                try:
+                    st.success("✅ Case file uploaded successfully!")
+                except:
+                    st.error("❌ Invalid JSON file. Please check the format and try again.")
     
     with col2:
         st.subheader("OSCE Simulation Features")
@@ -109,22 +154,57 @@ if st.session_state.phase == "setup":
                 # Generate unique cases for each station
                 st.session_state.stations = []
                 for i in range(n_stn):
-                    new_case = generate_station(lang)
-                    # Ensure patient has a realistic name if missing
-                    if "patientInfo" in new_case and ("name" not in new_case["patientInfo"] or new_case["patientInfo"]["name"].startswith("Patient_")):
-                        gender = new_case["patientInfo"].get("gender", "").lower()
-                        if gender == "male":
-                            names = ["James Wilson", "Michael Smith", "Robert Johnson", "Daniel Brown", "David Lee", "John Davis", "Thomas Garcia", "Richard Martinez", "Joseph Robinson", "Charles Wright"]
-                        else:
-                            names = ["Mary Williams", "Patricia Jones", "Jennifer Taylor", "Linda Anderson", "Elizabeth Thomas", "Barbara Jackson", "Susan White", "Jessica Harris", "Sarah Martin", "Karen Thompson"]
-                        new_case["patientInfo"]["name"] = names[i % len(names)]
+                    # Use selected chief complaint if specified
+                    if chief_selection == "Choose Specific":
+                        custom_case = {"chief_complaint": selected_chief}
+                        new_case = generate_station(lang, custom_case)
+                    else:
+                        # Use a random chief complaint from the selected specialty
+                        chief = random.choice(chief_options)
+                        custom_case = {"chief_complaint": chief}
+                        new_case = generate_station(lang, custom_case)
+                    
+                    # Initialize runtime state for this station
+                    new_case["_runtime"] = {
+                        "timer_started": False,
+                        "diagnosis_popup": False,
+                        "diagnosis_submitted": False,
+                        "lab_results_viewed": False
+                    }
+                    
                     st.session_state.stations.append(new_case)
-            else:
+                    
+            elif exam_mode == "Custom Cases":
                 if not custom_case_desc.strip():
                     st.error("Please provide a description for your custom case")
                     st.stop()
                 
-                st.session_state.stations = [custom_case_generator(lang, custom_case_desc)]
+                case = custom_case_generator(lang, custom_case_desc)
+                case["_runtime"] = {
+                    "timer_started": False,
+                    "diagnosis_popup": False,
+                    "diagnosis_submitted": False,
+                    "lab_results_viewed": False
+                }
+                st.session_state.stations = [case]
+                
+            else:  # Upload JSON Case
+                if not uploaded_file:
+                    st.error("Please upload a case file")
+                    st.stop()
+                    
+                try:
+                    case = json.load(uploaded_file)
+                    case["_runtime"] = {
+                        "timer_started": False,
+                        "diagnosis_popup": False,
+                        "diagnosis_submitted": False,
+                        "lab_results_viewed": False
+                    }
+                    st.session_state.stations = [case]
+                except Exception as e:
+                    st.error(f"Error loading case file: {str(e)}")
+                    st.stop()
         
         st.session_state.current = 0
         st.session_state.phase = "exam"
@@ -134,18 +214,32 @@ if st.session_state.phase == "setup":
 elif st.session_state.phase == "exam":
     s_idx = st.session_state.current
     station = st.session_state.stations[s_idx]
+    runtime = station["_runtime"]
 
     # Setup per-station session vars
-    if "timer" not in st.session_state:
+    if not runtime["timer_started"]:
         duration = st.session_state.get("duration", 60*5)  # Default to 5 minutes if not set
-        st.session_state.timer = start_timer(duration)
+        station["_runtime"]["timer"] = start_timer(duration)
+        station["_runtime"]["timer_started"] = True
         # Initialize message history for this station
-        st.session_state.msgs = []
-
+        station["_runtime"]["msgs"] = []
+    
     # Get session data
-    if st.session_state.timer is None:
-        st.session_state.timer = start_timer(st.session_state.get("duration", 60*5))
-    secs = remaining(st.session_state.timer)
+    timer = runtime.get("timer")
+    if timer is None:
+        timer = start_timer(st.session_state.get("duration", 60*5))
+        station["_runtime"]["timer"] = timer
+    secs = remaining(timer)
+    
+    # Candidate instructions
+    with st.expander("📝 Candidate Instructions", expanded=True):
+        st.markdown(CANDIDATE_INSTRUCTIONS.format(
+            minutes=st.session_state.duration//60,
+            name=station["patientInfo"]["name"],
+            age=station["patientInfo"]["age"],
+            gender=station["patientInfo"]["gender"],
+            chief=station["chiefComplaint"]
+        ))
     
     # Page layout: sidebar + main content
     # Sidebar for patient info and tools
@@ -154,7 +248,7 @@ elif st.session_state.phase == "exam":
         
         # Hint button
         if st.button("💡 Hint"):
-            transcript = "\n".join(m["content"] for m in st.session_state.msgs if m["role"] == "user")
+            transcript = "\n".join(m["content"] for m in runtime["msgs"] if m["role"] == "user")
             hint = generate_hint(st.session_state.lang, transcript)
             st.info(f"**Hint:** {hint}")
         
@@ -167,13 +261,11 @@ elif st.session_state.phase == "exam":
             st.write(f"**Occupation:** {patient_info.get('occupation', 'Unknown')}")
             
         # Lab/Imaging Results (if available and if user clicks to view)
-        if "lab_results_viewed" not in st.session_state:
-            st.session_state.lab_results_viewed = False
+        if not runtime.get("lab_results_viewed", False):
+            if st.button("🧪 Request Lab Results"):
+                runtime["lab_results_viewed"] = True
             
-        if st.button("🧪 Request Lab Results"):
-            st.session_state.lab_results_viewed = True
-            
-        if st.session_state.lab_results_viewed:
+        if runtime.get("lab_results_viewed", False):
             with st.expander("Lab Results", expanded=True):
                 lab_results = station.get("labResults", {})
                 if lab_results:
@@ -203,10 +295,7 @@ elif st.session_state.phase == "exam":
     chat_container = st.container()
     
     # Initialize messages if needed
-    if "msgs" not in st.session_state or not st.session_state.msgs:
-        # Add system message for context (not shown to user)
-        st.session_state.msgs = []
-        
+    if "msgs" not in runtime or not runtime["msgs"]:
         # Add initial patient greeting
         patient_info = station.get("patientInfo", {})
         patient_name = patient_info.get("name", "Patient")
@@ -214,11 +303,11 @@ elif st.session_state.phase == "exam":
             "role": "assistant", 
             "content": f"Hello doctor. I'm {patient_name}. I'm here because of {chief_complaint}."
         }
-        st.session_state.msgs.append(initial_msg)
+        runtime["msgs"] = [initial_msg]
     
     # Display chat history
     with chat_container:
-        for m in st.session_state.msgs:
+        for m in runtime["msgs"]:
             if m["role"] == "user":
                 st.chat_message("user").write(m["content"])
             elif m["role"] == "assistant":
@@ -228,13 +317,20 @@ elif st.session_state.phase == "exam":
     prompt = st.chat_input("Ask the patient...", disabled=secs==0)
     if prompt:
         # Add user message to history
-        st.session_state.msgs.append({"role": "user", "content": prompt})
+        runtime["msgs"].append({"role": "user", "content": prompt})
         
         # Get AI response using patient simulation
         chat_history = [
             {"role": m["role"], "content": m["content"]} 
-            for m in st.session_state.msgs[:-1]  # Exclude the just-added message
+            for m in runtime["msgs"][:-1]  # Exclude the just-added message
         ]
+        
+        # Extract patient details for better simulation
+        patient_info = station.get("patientInfo", {})
+        history_details = station.get("historyDetails", {})
+        past_medical_history = station.get("pastMedicalHistory", [])
+        medications = station.get("medications", [])
+        social_history = station.get("socialHistory", {})
         
         reply = patient_simulation(
             patient_case=station,
@@ -244,16 +340,16 @@ elif st.session_state.phase == "exam":
         )
         
         # Add AI response to history
-        st.session_state.msgs.append({"role": "assistant", "content": reply})
+        runtime["msgs"].append({"role": "assistant", "content": reply})
         st.rerun()
 
     ### ---- Diagnosis input unlocks near end of time ----
     remaining_secs = secs
-    if remaining_secs <= 90 and "diagnosis_popup" not in st.session_state:
-        st.session_state.diagnosis_popup = True
+    if remaining_secs <= 90 and not runtime.get("diagnosis_popup", False):
+        runtime["diagnosis_popup"] = True
 
     # Diagnosis popup
-    if "diagnosis_popup" in st.session_state and st.session_state.diagnosis_popup:
+    if runtime.get("diagnosis_popup", False) and not runtime.get("diagnosis_submitted", False):
         # Use st.container to create a persistent popup-like area
         diagnosis_popup = st.container()
         
@@ -263,72 +359,61 @@ elif st.session_state.phase == "exam":
             col1, col2 = st.columns([3, 1])
             
             with col1:
-                if "dx" not in st.session_state:
-                    st.session_state.dx = ""
+                if "dx" not in runtime:
+                    runtime["dx"] = ""
                     
-                st.session_state.dx = st.text_input(
+                runtime["dx"] = st.text_input(
                     "Final Diagnosis",
-                    value=st.session_state.dx,
+                    value=runtime.get("dx", ""),
                     placeholder="Enter your diagnosis here..."
                 )
                 
-                st.session_state.ddx = st.text_area(
+                runtime["ddx"] = st.text_area(
                     "Differential Diagnoses (optional)",
+                    value=runtime.get("ddx", ""),
                     placeholder="List other possible diagnoses"
                 )
                 
             with col2:
                 submit_dx = st.button("Submit Diagnosis")
-                if submit_dx and st.session_state.dx:
-                    st.session_state.diagnosis_submitted = True
-                    st.session_state.diagnosis_popup = False
+                if submit_dx and runtime["dx"]:
+                    runtime["diagnosis_submitted"] = True
                     if secs == 0:
                         # Force proceed to next station
-                        proceed_to_next_station()
+                        proceed_to_next_station(station, s_idx)
                     st.rerun()
 
     # Auto-submit when timer hits zero
     if secs == 0:
-        # Function to handle moving to next station
-        def proceed_to_next_station():
-            transcript = "\n".join(m["content"] for m in st.session_state.msgs if m["role"] == "user")
+        # Define function to handle moving to next station
+        def proceed_to_next_station(station, s_idx):
+            transcript = "\n".join(m["content"] for m in station["_runtime"]["msgs"] if m["role"] == "user")
             result = evaluate(
                 st.session_state.lang, 
                 transcript,
-                st.session_state.get("dx", ""), 
-                station["answer_key"]
+                station["_runtime"].get("dx", ""), 
+                station["answer_key"],
+                station
             )
-            st.session_state.stations[s_idx]["result"] = result
-            st.session_state.stations[s_idx]["transcript"] = transcript
-            st.session_state.stations[s_idx]["student_dx"] = st.session_state.get("dx", "")
+            station["result"] = result
+            station["transcript"] = transcript
+            station["student_dx"] = station["_runtime"].get("dx", "")
             
             # Prepare for next station
             st.session_state.current += 1
-            st.session_state.msgs = []
-            st.session_state.timer = None
-            st.session_state.dx = None
             
-            if "diagnosis_popup" in st.session_state:
-                del st.session_state.diagnosis_popup
-                
-            if "diagnosis_submitted" in st.session_state:
-                del st.session_state.diagnosis_submitted
-                
-            if "lab_results_viewed" in st.session_state:
-                del st.session_state.lab_results_viewed
-                
             # If all stations complete, move to results phase
             if st.session_state.current >= len(st.session_state.stations):
                 st.session_state.phase = "results"
-                
+            
             st.rerun()
         
         # If diagnosis not submitted yet, force the diagnosis popup
-        if "diagnosis_submitted" not in st.session_state:
-            st.session_state.diagnosis_popup = True
+        if not runtime.get("diagnosis_submitted", False):
+            runtime["diagnosis_popup"] = True
             st.error("⚠️ Time's up! You must submit a diagnosis to continue.")
         else:
-            proceed_to_next_station()
+            proceed_to_next_station(station, s_idx)
 
 ### ------------------ 3. RESULTS DASHBOARD ------------------ ###
 else:
@@ -357,7 +442,7 @@ else:
     st.subheader("Station Details")
     
     # Create two tabs - one for performance summary and one for case details
-    tab1, tab2 = st.tabs(["📊 Performance Summary", "📋 Full Case Details"])
+    tab1, tab2, tab3 = st.tabs(["📊 Performance Summary", "📋 Examiner Mark Sheets", "🔍 Full Case Details"])
     
     with tab1:
         for i, s in enumerate(st.session_state.stations):
@@ -381,7 +466,9 @@ else:
                     st.markdown("#### Score Breakdown")
                     st.write(f"**History taking:** {res.get('history_pct', res.get('checklist_pct', 0))}%")
                     st.write(f"**Examination:** {res.get('exam_pct', 'N/A')}%")
+                    st.write(f"**Lab & Radiology:** {res.get('lab_pct', 'N/A')}%")
                     st.write(f"**Management:** {res.get('management_pct', 'N/A')}%")
+                    st.write(f"**Interaction:** {res.get('interaction_pct', 'N/A')}%")
                     st.write(f"**Diagnosis accuracy:** {res['diagnosis_pct']}%")
                     
                     # Key missed items
@@ -419,8 +506,44 @@ else:
             
             # Create an expandable section for each station
             with st.expander(f"Station {i+1}: {s['chiefComplaint']}", expanded=i==0):
+                res = s["result"]
+                raw_scores = res.get("raw_scores", {})
+                student_dx = s.get("student_dx", "")
+                correct_dx = s["answer_key"]["main_diagnosis"]
+                dx_score = res["diagnosis_pct"]
+                total_score = res["overall_pct"]
+                comments = res.get("comments", "")
+                
+                # Render mark sheet
+                mark_sheet = render_mark_sheet(
+                    raw_scores, 
+                    student_dx, 
+                    correct_dx, 
+                    dx_score, 
+                    total_score, 
+                    comments
+                )
+                
+                st.markdown(mark_sheet)
+                
+                # Add download button for the mark sheet
+                mark_sheet_pdf = f"osce_mark_sheet_station_{i+1}.pdf"
+                st.download_button(
+                    "Download Mark Sheet",
+                    mark_sheet,
+                    file_name=f"osce_mark_sheet_station_{i+1}.md",
+                    mime="text/markdown"
+                )
+    
+    with tab3:
+        for i, s in enumerate(st.session_state.stations):
+            if "result" not in s:
+                continue
+            
+            # Create an expandable section for each station
+            with st.expander(f"Station {i+1}: {s['chiefComplaint']}", expanded=i==0):
                 # Remove system/internal data for cleaner display
-                display_data = {k: v for k, v in s.items() if k not in ['result', 'transcript', 'student_dx', 'generated_timestamp']}
+                display_data = {k: v for k, v in s.items() if k not in ['result', 'transcript', 'student_dx', 'generated_timestamp', '_runtime']}
                 st.json(display_data)
     
     # Final recommendations
