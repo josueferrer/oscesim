@@ -1,105 +1,88 @@
+import os, json, backoff
 from openai import OpenAI
-import os, backoff, time
 from dotenv import load_dotenv
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 @backoff.on_exception(backoff.expo, Exception, max_tries=5, max_time=60)
-def chat(messages, model="gpt-4o", temperature=0.2, max_tokens=600, retry_count=0):
+def chat(messages, model="gpt-4o", temperature=0.2, max_tokens=600, return_json=False):
     """
-    Chat completion using OpenAI models with fallback mechanism
-    - Input cost: $2.00 per 1M tokens
-    - Output cost: $8.00 per 1M tokens
-    - Context window: 1,047,576 tokens
-    - Max output: 32,768 tokens
-    - Knowledge cutoff: May 31, 2024
+    Send a request to the OpenAI API and return the response.
+    Uses exponential backoff for rate limit and other errors.
     """
-    max_retries = 3
     try:
         response = client.chat.completions.create(
             model=model,
             messages=messages,
             temperature=temperature,
-            max_tokens=max_tokens,
-            stream=False,
-            response_format={ "type": "text" }  # Ensuring text output
+            max_tokens=max_tokens
         )
-        return response.choices[0].message.content
-    except Exception as e:
-        # If we've tried a few times with the specified model, try a fallback model
-        if retry_count >= max_retries:
-            # Fallback to a more reliable model if gpt-4.1 is having issues
-            if model == "gpt-4.1":
-                print(f"Error with gpt-4.1, falling back to gpt-4o: {str(e)}")
-                return chat(messages, model="gpt-4o", temperature=temperature, max_tokens=max_tokens, retry_count=0)
-            elif model == "gpt-4o":
-                print(f"Error with gpt-4o, falling back to gpt-4o-mini: {str(e)}")
-                return chat(messages, model="gpt-4o-mini", temperature=temperature, max_tokens=max_tokens, retry_count=0)
-            else:
-                # If we've exhausted all fallbacks, return an error message
-                print(f"OpenAI API error with all models: {str(e)}")
-                return "I apologize, but I encountered a service error. Please try again later."
+        result = response.choices[0].message.content
         
-        # Increment retry count and try again after a delay
-        print(f"OpenAI API error (attempt {retry_count+1}): {str(e)}")
-        time.sleep(2 * (retry_count + 1))  # Exponential backoff
-        return chat(messages, model=model, temperature=temperature, max_tokens=max_tokens, retry_count=retry_count+1)
+        if return_json:
+            try:
+                # Try to parse as JSON
+                return json.loads(result)
+            except json.JSONDecodeError:
+                # If not valid JSON, return the raw response
+                return result
+        return result
+    except Exception as e:
+        print(f"Error in chat function: {str(e)}")
+        if return_json:
+            return {}
+        return f"Error: {str(e)}"
 
-def patient_simulation(patient_case, user_message, chat_history=None, model="gpt-4o"):
+def patient_simulation(patient_case, user_message, chat_history, model="gpt-4o"):
     """
-    Specialized function to simulate a patient's responses based on a generated case.
-    
-    Args:
-        patient_case: The complete case data
-        user_message: The current message from the user/medical student
-        chat_history: Optional list of previous messages for context
-        model: The LLM model to use
-    
-    Returns:
-        A patient response that realistically simulates how a patient would answer
+    Simulate a patient response based on the case details and chat history.
     """
-    if chat_history is None:
-        chat_history = []
-    
-    # Extract relevant patient details from case
+    # Extract relevant patient details
     patient_info = patient_case.get("patientInfo", {})
-    patient_name = patient_info.get("name", "Patient")
-    patient_age = patient_info.get("age", "Unknown")
-    patient_gender = patient_info.get("gender", "Unknown")
-    occupation = patient_info.get("occupation", "Unknown")
+    name = patient_info.get("name", "Patient")
+    age = patient_info.get("age", "Unknown")
+    gender = patient_info.get("gender", "Unknown")
+    chief = patient_case.get("chiefComplaint", "Unknown complaint")
     
-    chief_complaint = patient_case.get("chiefComplaint", "Unknown complaint")
-    history_details = patient_case.get("historyDetails", {})
-    
-    # Create a detailed patient simulation prompt
-    system_message = {
-        "role": "system",
-        "content": f"""You are roleplaying as a patient named {patient_name}, {patient_age} years old, {patient_gender}, working as {occupation}. 
-You are attending a medical consultation for: {chief_complaint}.
-
-IMPORTANT GUIDELINES:
-1. Respond AS THE PATIENT, not as an AI. Use first-person perspective.
-2. You ONLY know what a real patient would know about their condition.
-3. DO NOT volunteer information unless directly asked.
-4. DO NOT use medical terminology the patient wouldn't know.
-5. Express appropriate emotions (worry, pain, confusion) based on your condition.
-6. If asked about a symptom you don't have, simply deny it naturally.
-7. Your answers should be concise and realistic - keep responses under 2-3 sentences unless pressed for details.
-8. Maintain consistent details throughout the interaction.
-
-YOUR MEDICAL DETAILS:
-- Chief complaint: {chief_complaint}
-- History: {history_details}
-- Past medical history: {patient_case.get('pastMedicalHistory', [])}
-- Medications: {patient_case.get('medications', [])}
-- Social history: {patient_case.get('socialHistory', {})}
-
-Remember to act like a real patient with this condition would - with appropriate knowledge gaps, concerns, and communication style."""
+    # Construct the system prompt
+    system_prompt = {
+        "role": "system", 
+        "content": (
+            f"You are simulating a patient named {name}, {age} years old, {gender}, "
+            f"who has come to the doctor with: {chief}. "
+            "Respond as the patient would based on the medical case details provided. "
+            "Be natural, realistic, and consistent with the case details. "
+            "The user is a medical student practicing for their OSCE exam. "
+            "Do not volunteer all information at once - make the student ask appropriate questions. "
+            "Correct information is important but the student must elicit it through proper questioning."
+        )
     }
     
-    # Construct the complete conversation
-    messages = [system_message] + chat_history + [{"role": "user", "content": user_message}]
+    # Add case details to help guide the AI
+    context = {
+        "role": "system",
+        "content": (
+            "Case details (not to be directly revealed unless asked):\n" +
+            f"- History: {patient_case.get('historyDetails', {})}\n" +
+            f"- Past medical history: {patient_case.get('pastMedicalHistory', [])}\n" +
+            f"- Medications: {patient_case.get('medications', [])}\n" +
+            f"- Social history: {patient_case.get('socialHistory', {})}\n" +
+            f"- Review of systems: {patient_case.get('reviewOfSystems', {})}\n" +
+            f"- Physical findings: {patient_case.get('physicalFindings', [])}"
+        )
+    }
     
-    # Use a higher temperature for more realistic, variable patient responses
-    return chat(messages, model=model, temperature=0.7, max_tokens=150) 
+    # Format the chat history
+    messages = [system_prompt, context]
+    
+    # Add chat history
+    for msg in chat_history:
+        if msg["role"] in ["user", "assistant"]:
+            messages.append(msg)
+    
+    # Add the current user message
+    messages.append({"role": "user", "content": user_message})
+    
+    # Get response using the main chat function
+    return chat(messages, model=model, temperature=0.4) 

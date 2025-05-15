@@ -219,17 +219,15 @@ elif st.session_state.phase == "exam":
     # Setup per-station session vars
     if not runtime["timer_started"]:
         duration = st.session_state.get("duration", 60*5)  # Default to 5 minutes if not set
-        station["_runtime"]["timer"] = start_timer(duration)
-        station["_runtime"]["timer_started"] = True
+        runtime["timer"] = start_timer(duration)
+        runtime["timer_started"] = True
         # Initialize message history for this station
-        station["_runtime"]["msgs"] = []
+        runtime["msgs"] = []
     
     # Get session data
-    timer = runtime.get("timer")
-    if timer is None:
-        timer = start_timer(st.session_state.get("duration", 60*5))
-        station["_runtime"]["timer"] = timer
-    secs = remaining(timer)
+    if runtime.get("timer") is None:
+        runtime["timer"] = start_timer(st.session_state.get("duration", 300))  # Default to 5 mins if no duration set
+    secs = remaining(runtime.get("timer"))
     
     # Candidate instructions
     with st.expander("📝 Candidate Instructions", expanded=True):
@@ -344,7 +342,10 @@ elif st.session_state.phase == "exam":
         st.rerun()
 
     ### ---- Diagnosis input unlocks near end of time ----
-    remaining_secs = secs
+    # Get remaining seconds again in case of changes
+    remaining_secs = secs if isinstance(secs, int) else 0
+    
+    # Show diagnosis popup in the last 90 seconds or when time is up
     if remaining_secs <= 90 and not runtime.get("diagnosis_popup", False):
         runtime["diagnosis_popup"] = True
 
@@ -379,25 +380,46 @@ elif st.session_state.phase == "exam":
                 if submit_dx and runtime["dx"]:
                     runtime["diagnosis_submitted"] = True
                     if secs == 0:
-                        # Force proceed to next station
-                        proceed_to_next_station(station, s_idx)
+                        # Function to handle moving to next station
+                        transcript = "\n".join(m["content"] for m in runtime["msgs"] if m["role"] == "user")
+                        result = evaluate(
+                            st.session_state.lang, 
+                            transcript,
+                            runtime.get("dx", ""), 
+                            station["answer_key"],
+                            station
+                        )
+                        station["result"] = result
+                        station["transcript"] = transcript
+                        station["student_dx"] = runtime.get("dx", "")
+                        
+                        # Prepare for next station
+                        st.session_state.current += 1
+                        
+                        # If all stations complete, move to results phase
+                        if st.session_state.current >= len(st.session_state.stations):
+                            st.session_state.phase = "results"
                     st.rerun()
 
     # Auto-submit when timer hits zero
     if secs == 0:
-        # Define function to handle moving to next station
-        def proceed_to_next_station(station, s_idx):
-            transcript = "\n".join(m["content"] for m in station["_runtime"]["msgs"] if m["role"] == "user")
+        # If diagnosis not submitted yet, force the diagnosis popup
+        if not runtime.get("diagnosis_submitted", False):
+            runtime["diagnosis_popup"] = True
+            st.error("⚠️ Time's up! You must submit a diagnosis to continue.")
+        else:
+            # Function to handle moving to next station
+            transcript = "\n".join(m["content"] for m in runtime["msgs"] if m["role"] == "user")
             result = evaluate(
                 st.session_state.lang, 
                 transcript,
-                station["_runtime"].get("dx", ""), 
+                runtime.get("dx", ""), 
                 station["answer_key"],
                 station
             )
             station["result"] = result
             station["transcript"] = transcript
-            station["student_dx"] = station["_runtime"].get("dx", "")
+            station["student_dx"] = runtime.get("dx", "")
             
             # Prepare for next station
             st.session_state.current += 1
@@ -407,13 +429,6 @@ elif st.session_state.phase == "exam":
                 st.session_state.phase = "results"
             
             st.rerun()
-        
-        # If diagnosis not submitted yet, force the diagnosis popup
-        if not runtime.get("diagnosis_submitted", False):
-            runtime["diagnosis_popup"] = True
-            st.error("⚠️ Time's up! You must submit a diagnosis to continue.")
-        else:
-            proceed_to_next_station(station, s_idx)
 
 ### ------------------ 3. RESULTS DASHBOARD ------------------ ###
 else:
