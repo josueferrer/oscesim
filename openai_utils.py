@@ -6,9 +6,9 @@ load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 @backoff.on_exception(backoff.expo, Exception, max_tries=5, max_time=60)
-def chat(messages, model="gpt-4.1", temperature=0.2, max_tokens=600, retry_count=0):
+def chat(messages, model="gpt-4o", temperature=0.2, max_tokens=600, retry_count=0):
     """
-    Chat completion using GPT-4.1
+    Chat completion using OpenAI models with fallback mechanism
     - Input cost: $2.00 per 1M tokens
     - Output cost: $8.00 per 1M tokens
     - Context window: 1,047,576 tokens
@@ -18,7 +18,7 @@ def chat(messages, model="gpt-4.1", temperature=0.2, max_tokens=600, retry_count
     max_retries = 3
     try:
         response = client.chat.completions.create(
-            model=model,  # Using GPT-4.1 - latest flagship model
+            model=model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,

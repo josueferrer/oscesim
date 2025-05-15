@@ -131,6 +131,8 @@ elif st.session_state.phase == "exam":
         st.session_state.msgs = []
 
     # Get session data
+    if st.session_state.timer is None:
+        st.session_state.timer = start_timer(st.session_state.get("duration", 60*5))
     secs = remaining(st.session_state.timer)
     
     # Page layout: sidebar + main content
@@ -224,7 +226,7 @@ elif st.session_state.phase == "exam":
             patient_case=station,
             user_message=prompt,
             chat_history=chat_history,
-            model="gpt-4.1"
+            model="gpt-4o"
         )
         
         # Add AI response to history

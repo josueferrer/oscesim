@@ -86,10 +86,10 @@ def generate_station(lang="en", custom_case=None):
     
     usr = {"role":"user","content":f"Generate a detailed OSCE station for chief complaint: {chief} {case_type}"}
     
-    # Using GPT-4.1 with temperature 0.4 for creative but medically accurate case generation
+    # Using a safe model with temperature 0.4 for creative but medically accurate case generation
     try:
         # First, get the raw text response
-        raw_response = chat([sys_msg, usr], model="gpt-4.1", temperature=0.4)
+        raw_response = chat([sys_msg, usr], model="gpt-4o", temperature=0.4)
         
         # Try to fix any JSON formatting issues
         fixed_json = fix_json_string(raw_response)
@@ -97,14 +97,16 @@ def generate_station(lang="en", custom_case=None):
         # Parse the fixed JSON
         try:
             case_data = json.loads(fixed_json)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            print(f"JSON parse error: {str(e)}")
             # If still failing, try a more aggressive cleanup
             # Extract anything that looks like JSON
             json_match = re.search(r'\{.*\}', fixed_json, re.DOTALL)
             if json_match:
                 try:
                     case_data = json.loads(json_match.group(0))
-                except:
+                except Exception as e2:
+                    print(f"Secondary parse error: {str(e2)}")
                     # If all parsing fails, create a minimal case
                     case_data = create_fallback_case(chief, patient_age, patient_gender, lang)
             else:
@@ -205,16 +207,18 @@ def custom_case_generator(lang="en", case_description=""):
     
     try:
         # Extract basic case parameters
-        params_extraction = chat([sys_msg, usr], model="gpt-4.1", temperature=0.2)
+        params_extraction = chat([sys_msg, usr], model="gpt-4o", temperature=0.2)
         
         # Try to parse as JSON
         try:
             extracted_data = json.loads(fix_json_string(params_extraction))
             return generate_station(lang, extracted_data)
-        except:
+        except json.JSONDecodeError as e:
+            print(f"Custom case JSON parse error: {str(e)}")
             # If parsing fails, create a case with just the description as chief complaint
             custom_data = {"chief_complaint": case_description}
             return generate_station(lang, custom_data)
-    except:
+    except Exception as e:
+        print(f"Error in custom case generation: {str(e)}")
         # Fallback to basic station generation
         return generate_station(lang, {"chief_complaint": case_description}) 
