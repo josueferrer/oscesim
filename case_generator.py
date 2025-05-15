@@ -67,7 +67,7 @@ def generate_station(lang="en", custom_case=None, specialty=None):
     for attempt in range(max_attempts):
         try:
             # First, get the raw text response
-            raw_response = chat([sys_msg, usr], model="gpt-4o", temperature=0.4)
+            raw_response = chat([sys_msg, usr], model="gpt-3.5-turbo", temperature=0.4)
             
             # Try to fix any JSON formatting issues
             fixed_json = fix_json_string(raw_response)
@@ -267,7 +267,7 @@ def custom_case_generator(lang="en", case_description=""):
     
     try:
         # Extract basic case parameters
-        params_extraction = chat([sys_msg, usr], model="gpt-4o", temperature=0.2)
+        params_extraction = chat([sys_msg, usr], model="gpt-3.5-turbo", temperature=0.2)
         
         # Try to parse as JSON
         try:

@@ -1,18 +1,23 @@
 import os, json, backoff
-from openai import OpenAI
+import openai
 from dotenv import load_dotenv
 
 load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Set the OpenAI API key directly on the openai module (old style)
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-@backoff.on_exception(backoff.expo, Exception, max_tries=5, max_time=60)
-def chat(messages, model="gpt-4o", temperature=0.2, max_tokens=600, return_json=False):
+@backoff.on_exception(backoff.expo, openai.error.RateLimitError, max_tries=5, max_time=60)
+def chat(messages, model="gpt-3.5-turbo", temperature=0.2, max_tokens=600, return_json=False):
     """
     Send a request to the OpenAI API and return the response.
     Uses exponential backoff for rate limit and other errors.
     """
+    if not openai.api_key:
+        return "Error: OpenAI API key not found"
+        
     try:
-        response = client.chat.completions.create(
+        # Use the old-style API for compatibility with openai==0.28.1
+        response = openai.ChatCompletion.create(
             model=model,
             messages=messages,
             temperature=temperature,
@@ -34,7 +39,7 @@ def chat(messages, model="gpt-4o", temperature=0.2, max_tokens=600, return_json=
             return {}
         return f"Error: {str(e)}"
 
-def patient_simulation(patient_case, user_message, chat_history, model="gpt-4o"):
+def patient_simulation(patient_case, user_message, chat_history, model="gpt-3.5-turbo"):
     """
     Simulate a patient response based on the case details and chat history.
     """
