@@ -1,12 +1,12 @@
 from openai import OpenAI
-import os, backoff
+import os, backoff, time
 from dotenv import load_dotenv
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-@backoff.on_exception(backoff.expo, Exception, max_time=60)
-def chat(messages, model="gpt-4.1", temperature=0.2, max_tokens=600):
+@backoff.on_exception(backoff.expo, Exception, max_tries=5, max_time=60)
+def chat(messages, model="gpt-4.1", temperature=0.2, max_tokens=600, retry_count=0):
     """
     Chat completion using GPT-4.1
     - Input cost: $2.00 per 1M tokens
@@ -15,6 +15,7 @@ def chat(messages, model="gpt-4.1", temperature=0.2, max_tokens=600):
     - Max output: 32,768 tokens
     - Knowledge cutoff: May 31, 2024
     """
+    max_retries = 3
     try:
         response = client.chat.completions.create(
             model=model,  # Using GPT-4.1 - latest flagship model
@@ -26,8 +27,24 @@ def chat(messages, model="gpt-4.1", temperature=0.2, max_tokens=600):
         )
         return response.choices[0].message.content
     except Exception as e:
-        print(f"OpenAI API error: {str(e)}")
-        return "I apologize, but I encountered an error. Please try again."
+        # If we've tried a few times with the specified model, try a fallback model
+        if retry_count >= max_retries:
+            # Fallback to a more reliable model if gpt-4.1 is having issues
+            if model == "gpt-4.1":
+                print(f"Error with gpt-4.1, falling back to gpt-4o: {str(e)}")
+                return chat(messages, model="gpt-4o", temperature=temperature, max_tokens=max_tokens, retry_count=0)
+            elif model == "gpt-4o":
+                print(f"Error with gpt-4o, falling back to gpt-4o-mini: {str(e)}")
+                return chat(messages, model="gpt-4o-mini", temperature=temperature, max_tokens=max_tokens, retry_count=0)
+            else:
+                # If we've exhausted all fallbacks, return an error message
+                print(f"OpenAI API error with all models: {str(e)}")
+                return "I apologize, but I encountered a service error. Please try again later."
+        
+        # Increment retry count and try again after a delay
+        print(f"OpenAI API error (attempt {retry_count+1}): {str(e)}")
+        time.sleep(2 * (retry_count + 1))  # Exponential backoff
+        return chat(messages, model=model, temperature=temperature, max_tokens=max_tokens, retry_count=retry_count+1)
 
 def patient_simulation(patient_case, user_message, chat_history=None, model="gpt-4.1"):
     """

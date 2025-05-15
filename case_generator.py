@@ -1,5 +1,21 @@
-import json, random
+import json, random, re
 from openai_utils import chat
+
+def fix_json_string(json_str):
+    """
+    Attempt to fix common JSON formatting issues in the model's output.
+    """
+    # Remove any markdown formatting that might be around the JSON
+    json_str = re.sub(r'^```json\s*', '', json_str)
+    json_str = re.sub(r'\s*```$', '', json_str)
+    
+    # Sometimes model adds commentary before or after the JSON
+    if json_str.find('{') > 0:
+        json_str = json_str[json_str.find('{'):]
+    if json_str.rfind('}') < len(json_str) - 1:
+        json_str = json_str[:json_str.rfind('}')+1]
+        
+    return json_str
 
 def generate_station(lang="en", custom_case=None):
     """
@@ -65,17 +81,113 @@ def generate_station(lang="en", custom_case=None):
         "\n- keyHistoryQuestions (array of strings with questions student should ask)"
         "\n- keyExamManeuvers (array of strings with exams student should perform)"
         "\n- answer_key (object with main_diagnosis, differentials array, management array)"
+        "\n\nIMPORTANT: ONLY return valid JSON without any additional text, markdown formatting, or explanation."
        )}
     
     usr = {"role":"user","content":f"Generate a detailed OSCE station for chief complaint: {chief} {case_type}"}
     
     # Using GPT-4.1 with temperature 0.4 for creative but medically accurate case generation
-    case_data = json.loads(chat([sys_msg, usr], model="gpt-4.1", temperature=0.4))
+    try:
+        # First, get the raw text response
+        raw_response = chat([sys_msg, usr], model="gpt-4.1", temperature=0.4)
+        
+        # Try to fix any JSON formatting issues
+        fixed_json = fix_json_string(raw_response)
+        
+        # Parse the fixed JSON
+        try:
+            case_data = json.loads(fixed_json)
+        except json.JSONDecodeError:
+            # If still failing, try a more aggressive cleanup
+            # Extract anything that looks like JSON
+            json_match = re.search(r'\{.*\}', fixed_json, re.DOTALL)
+            if json_match:
+                try:
+                    case_data = json.loads(json_match.group(0))
+                except:
+                    # If all parsing fails, create a minimal case
+                    case_data = create_fallback_case(chief, patient_age, patient_gender, lang)
+            else:
+                case_data = create_fallback_case(chief, patient_age, patient_gender, lang)
+    except Exception as e:
+        print(f"Error generating station: {str(e)}")
+        case_data = create_fallback_case(chief, patient_age, patient_gender, lang)
     
     # Add timestamps to track when this case was generated
     case_data["generated_timestamp"] = int(random.random() * 10000000)
     
+    # Ensure case_data has all required fields
+    ensure_required_fields(case_data, chief, patient_age, patient_gender)
+    
     return case_data
+
+def create_fallback_case(chief, age, gender, lang):
+    """Create a simple fallback case when JSON parsing fails"""
+    return {
+        "patientInfo": {
+            "name": f"Patient_{random.randint(1000, 9999)}",
+            "age": age,
+            "gender": gender,
+            "occupation": "Office worker"
+        },
+        "chiefComplaint": chief,
+        "historyDetails": {
+            "onset": "3 days ago",
+            "duration": "Continuous",
+            "character": "Moderate",
+            "aggravating": "Physical activity",
+            "relieving": "Rest"
+        },
+        "pastMedicalHistory": ["None significant"],
+        "familyHistory": ["None significant"],
+        "medications": ["None"],
+        "socialHistory": {"smoking": "No", "alcohol": "Occasional", "living": "With family"},
+        "reviewOfSystems": {},
+        "physicalFindings": ["Normal vital signs", "Mild discomfort"],
+        "labResults": {},
+        "imagingResults": {},
+        "keyHistoryQuestions": ["Ask about onset", "Ask about severity", "Ask about associated symptoms"],
+        "keyExamManeuvers": ["Check vital signs", "Examine affected area"],
+        "answer_key": {
+            "main_diagnosis": "Unspecified " + chief.lower(),
+            "differentials": ["Alternative diagnosis 1", "Alternative diagnosis 2"],
+            "management": ["Symptomatic treatment", "Follow-up in 2 weeks"]
+        }
+    }
+
+def ensure_required_fields(case_data, chief, age, gender):
+    """Ensure all required fields exist in the case data"""
+    # Check patientInfo
+    if "patientInfo" not in case_data:
+        case_data["patientInfo"] = {
+            "name": f"Patient_{random.randint(1000, 9999)}",
+            "age": age,
+            "gender": gender,
+            "occupation": "Office worker"
+        }
+    
+    # Ensure chief complaint
+    if "chiefComplaint" not in case_data:
+        case_data["chiefComplaint"] = chief
+    
+    # Ensure answer_key
+    if "answer_key" not in case_data:
+        case_data["answer_key"] = {
+            "main_diagnosis": "Unspecified " + chief.lower(),
+            "differentials": ["Alternative diagnosis 1", "Alternative diagnosis 2"],
+            "management": ["Symptomatic treatment", "Follow-up in 2 weeks"]
+        }
+        
+    # Add any other missing fields with empty defaults
+    for field in ["historyDetails", "pastMedicalHistory", "familyHistory", "medications", 
+                "socialHistory", "reviewOfSystems", "physicalFindings", "labResults", 
+                "imagingResults", "keyHistoryQuestions", "keyExamManeuvers"]:
+        if field not in case_data:
+            if field in ["pastMedicalHistory", "familyHistory", "medications", 
+                        "physicalFindings", "keyHistoryQuestions", "keyExamManeuvers"]:
+                case_data[field] = []
+            else:
+                case_data[field] = {}
 
 def custom_case_generator(lang="en", case_description=""):
     """Generate a custom case based on user description"""
@@ -86,18 +198,23 @@ def custom_case_generator(lang="en", case_description=""):
             "First, extract the key clinical details from the user's description. "
             "Then create a complete OSCE case based on these details. "
             "Return a strict JSON with all medical details needed for an OSCE station."
+            "\n\nIMPORTANT: ONLY return valid JSON without any additional text."
         )}
     
     usr = {"role":"user","content":f"Create an OSCE case based on this description: {case_description}"}
     
-    # Extract basic case parameters
-    params_extraction = chat([sys_msg, usr], model="gpt-4.1", temperature=0.2)
-    
     try:
-        # Try to parse the extraction result
-        extracted_data = json.loads(params_extraction)
-        return generate_station(lang, extracted_data)
+        # Extract basic case parameters
+        params_extraction = chat([sys_msg, usr], model="gpt-4.1", temperature=0.2)
+        
+        # Try to parse as JSON
+        try:
+            extracted_data = json.loads(fix_json_string(params_extraction))
+            return generate_station(lang, extracted_data)
+        except:
+            # If parsing fails, create a case with just the description as chief complaint
+            custom_data = {"chief_complaint": case_description}
+            return generate_station(lang, custom_data)
     except:
-        # If parsing fails, create a case with just the description as chief complaint
-        custom_data = {"chief_complaint": case_description}
-        return generate_station(lang, custom_data) 
+        # Fallback to basic station generation
+        return generate_station(lang, {"chief_complaint": case_description}) 
